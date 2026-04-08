@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 米国市場 朝8時 市況レポート
-US Market Morning Briefing — fetches from Yahoo Finance (crumb auth)
+US Market Morning Briefing — fetches from Yahoo Finance Japan (finance.yahoo.co.jp)
 """
 
 import requests
@@ -40,9 +40,9 @@ def get_crumb() -> str | None:
     """Yahoo Finance crumb を取得（新しい認証方式）"""
     try:
         # クッキーを設定するためにトップページを訪問
-        SESSION.get("https://finance.yahoo.com", timeout=10)
+        SESSION.get("https://finance.yahoo.co.jp", timeout=10)
         r = SESSION.get(
-            "https://query1.finance.yahoo.com/v1/test/getcrumb",
+            "https://query1.finance.yahoo.co.jp/v1/test/getcrumb",
             timeout=10,
         )
         if r.status_code == 200:
@@ -56,7 +56,7 @@ def fetch_quotes(symbols: list[str], crumb: str) -> dict:
     """複数シンボルを一括取得"""
     syms = ",".join(symbols)
     url = (
-        "https://query1.finance.yahoo.com/v7/finance/quote"
+        "https://query1.finance.yahoo.co.jp/v7/finance/quote"
         f"?symbols={syms}&crumb={crumb}"
     )
     try:
@@ -174,7 +174,7 @@ def print_briefing(crumb: str):
 def main():
     crumb = get_crumb()
     if not crumb:
-        print("エラー: Yahoo Finance への接続に失敗しました。", file=sys.stderr)
+        print("エラー: Yahoo Finance Japan への接続に失敗しました。", file=sys.stderr)
         print("ネットワーク接続を確認してください。", file=sys.stderr)
         sys.exit(1)
     print_briefing(crumb)
