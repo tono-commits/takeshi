@@ -1,0 +1,73 @@
+name: 米国市場 朝の市況レポート
+
+on:
+  schedule:
+    # 毎日 23:00 UTC = 翌朝 8:00 JST
+    - cron: '0 23 * * *'
+  workflow_dispatch:  # 手動実行も可能
+
+jobs:
+  market-report:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Fetch market data
+        id: report
+        run: |
+          pip install requests --quiet
+          python3 market_report.py --no-color > /tmp/report.txt 2>&1
+          echo "report<<EOF" >> $GITHUB_OUTPUT
+          cat /tmp/report.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Issue with report
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // ラベルがなければ作成
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'market-report',
+              });
+            } catch {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'market-report',
+                color: '0075ca',
+                description: '自動生成の米国市場市況レポート',
+              });
+            }
+
+            const report = `${{ steps.report.outputs.report }}`;
+            const now = new Date();
+            const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+            const dateStr = jst.toISOString().slice(0, 10).replace(/-/g, '/');
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `📈 米国市場 市況レポート ${dateStr}`,
+              body: [
+                '## 朝の市況レポート',
+                '',
+                '```',
+                report,
+                '```',
+                '',
+                `_自動生成: ${jst.toISOString().replace('T', ' ').slice(0, 16)} JST_`,
+              ].join('\n'),
+              labels: ['market-report'],
+            });
