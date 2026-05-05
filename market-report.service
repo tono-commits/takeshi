@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily US Market Morning Report
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /home/user/takeshi/market_report.py
+StandardOutput=append:/home/user/takeshi/market_report.log
+StandardError=append:/home/user/takeshi/market_report.log

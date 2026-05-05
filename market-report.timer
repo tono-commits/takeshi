@@ -1,0 +1,9 @@
+[Unit]
+Description=Run US Market Morning Report at 8:00 AM JST daily
+
+[Timer]
+OnCalendar=*-*-* 08:00:00 Asia/Tokyo
+Persistent=true
+
+[Install]
+WantedBy=timers.target
