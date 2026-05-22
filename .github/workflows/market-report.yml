@@ -1,0 +1,95 @@
+name: 米国市場 朝の市況レポート
+
+on:
+  schedule:
+    - cron: '0 23 * * *'  # 23:00 UTC = 翌8:00 JST
+  workflow_dispatch:  # 手動実行（テスト用）
+
+jobs:
+  market-report:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+
+    steps:
+      - name: 市況データ取得・Issue作成
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const today = new Date().toLocaleDateString('ja-JP', {
+              timeZone: 'Asia/Tokyo',
+              year: 'numeric', month: '2-digit', day: '2-digit'
+            });
+
+            const symbols = [
+              { sym: '%5EGSPC',   name: 'S&P 500',          fmt: 'number' },
+              { sym: '%5EIXIC',   name: 'NASDAQ',            fmt: 'number' },
+              { sym: '%5EDJI',    name: 'ダウ平均',           fmt: 'number' },
+              { sym: '%5ERVX',    name: 'VIX（恐怖指数）',    fmt: 'decimal' },
+              { sym: '%5ETNX',    name: '米10年国債利回り(%)', fmt: 'decimal' },
+              { sym: 'DX-Y.NYB', name: '米ドル指数',          fmt: 'decimal' },
+            ];
+
+            const rows = [];
+            for (const { sym, name, fmt } of symbols) {
+              try {
+                const url = `https://query1.finance.yahoo.com/v8/finance/chart/${sym}?interval=1d&range=5d`;
+                const res = await fetch(url, {
+                  headers: { 'User-Agent': 'Mozilla/5.0' }
+                });
+                const json = await res.json();
+                const result = json.chart.result[0];
+                const closes = result.indicators.quote[0].close.filter(v => v !== null);
+                const cur = closes[closes.length - 1];
+                const prev = closes[closes.length - 2];
+                const chg = cur - prev;
+                const chgPct = chg / prev * 100;
+                const arrow = chg >= 0 ? '🟢 ▲' : '🔴 ▼';
+                const sign  = chg >= 0 ? '+' : '';
+                const curStr  = fmt === 'number'
+                  ? cur.toLocaleString('en-US', { maximumFractionDigits: 2 })
+                  : cur.toFixed(2);
+                const chgStr  = `${sign}${chg.toFixed(2)} (${sign}${chgPct.toFixed(2)}%)`;
+                rows.push(`| ${name} | ${curStr} | ${arrow} ${chgStr} |`);
+              } catch (e) {
+                rows.push(`| ${name} | — | データ取得失敗 |`);
+              }
+            }
+
+            // ラベルがなければ作成
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'market-report',
+              });
+            } catch {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'market-report',
+                color: '0075ca',
+                description: '米国市場 毎日自動レポート',
+              });
+            }
+
+            const body = [
+              `## 📊 米国市場 朝の市況レポート`,
+              `> ${today} 8:00 JST（前営業日終値ベース）`,
+              ``,
+              `### 主要指数`,
+              `| 指数 | 価格 | 前日比 |`,
+              `|:-----|-----:|:-------|`,
+              ...rows,
+              ``,
+              `---`,
+              `*データソース: Yahoo Finance ／ このレポートは GitHub Actions により自動生成されます*`,
+            ].join('\n');
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `📊 米国市場 朝の市況 ${today}`,
+              body,
+              labels: ['market-report'],
+            });
