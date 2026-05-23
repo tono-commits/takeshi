@@ -1,0 +1,36 @@
+name: ラベルセットアップ
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/us-market-report.yml'
+
+jobs:
+  create-label:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: market-report ラベル作成
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'market-report',
+                color: '0075ca',
+                description: '米国市場 日次市況レポート',
+              });
+              console.log('ラベル作成完了');
+            } catch (e) {
+              if (e.status === 422) {
+                console.log('ラベルは既に存在します');
+              } else {
+                throw e;
+              }
+            }
