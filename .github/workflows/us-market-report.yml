@@ -1,0 +1,134 @@
+name: 米国市場 朝の市況レポート
+
+on:
+  schedule:
+    # 毎日 23:00 UTC = 翌日 8:00 AM JST
+    - cron: '0 23 * * *'
+  workflow_dispatch:
+
+jobs:
+  market-report:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+
+    steps:
+      - name: 市況データ取得・レポート作成
+        id: report
+        run: |
+          pip install yfinance --quiet
+
+          python3 << 'PYEOF'
+          import yfinance as yf
+          import datetime
+          import os
+
+          JST = datetime.timezone(datetime.timedelta(hours=9))
+          now = datetime.datetime.now(JST)
+          today = now.strftime("%Y年%m月%d日")
+
+          tickers = {
+              "S&P 500":     "^GSPC",
+              "Dow Jones":   "^DJI",
+              "NASDAQ":      "^IXIC",
+              "Russell 2000":"^RUT",
+              "VIX (恐怖指数)": "^VIX",
+              "米10年国債利回り": "^TNX",
+              "ドル円":      "JPY=X",
+              "WTI原油":     "CL=F",
+              "金 (Gold)":   "GC=F",
+          }
+
+          lines = []
+          lines.append(f"## 📊 米国市場 市況レポート — {today} 8:00 AM")
+          lines.append("")
+          lines.append("### 主要指数")
+          lines.append("| 指標 | 終値 | 前日比 | 変化率 |")
+          lines.append("|------|------|--------|--------|")
+
+          for name, symbol in tickers.items():
+              try:
+                  tk = yf.Ticker(symbol)
+                  hist = tk.history(period="5d")
+                  if len(hist) < 2:
+                      lines.append(f"| {name} | データなし | — | — |")
+                      continue
+                  close = hist["Close"].iloc[-1]
+                  prev  = hist["Close"].iloc[-2]
+                  diff  = close - prev
+                  pct   = diff / prev * 100
+                  arrow = "▲" if diff >= 0 else "▼"
+                  sign  = "+" if diff >= 0 else ""
+                  if symbol in ("JPY=X",):
+                      lines.append(f"| {name} | {close:.2f} | {arrow} {sign}{diff:.2f} | {sign}{pct:.2f}% |")
+                  elif symbol in ("^TNX",):
+                      lines.append(f"| {name} | {close:.3f}% | {arrow} {sign}{diff:.3f} | {sign}{pct:.2f}% |")
+                  else:
+                      lines.append(f"| {name} | {close:,.2f} | {arrow} {sign}{diff:,.2f} | {sign}{pct:.2f}% |")
+              except Exception as e:
+                  lines.append(f"| {name} | エラー | — | — |")
+
+          lines.append("")
+          lines.append("### 個別注目銘柄")
+          lines.append("| 銘柄 | 終値 | 前日比 | 変化率 |")
+          lines.append("|------|------|--------|--------|")
+
+          stocks = {
+              "Apple (AAPL)":    "AAPL",
+              "Microsoft (MSFT)":"MSFT",
+              "NVIDIA (NVDA)":   "NVDA",
+              "Amazon (AMZN)":   "AMZN",
+              "Tesla (TSLA)":    "TSLA",
+          }
+
+          for name, symbol in stocks.items():
+              try:
+                  tk = yf.Ticker(symbol)
+                  hist = tk.history(period="5d")
+                  if len(hist) < 2:
+                      lines.append(f"| {name} | データなし | — | — |")
+                      continue
+                  close = hist["Close"].iloc[-1]
+                  prev  = hist["Close"].iloc[-2]
+                  diff  = close - prev
+                  pct   = diff / prev * 100
+                  arrow = "▲" if diff >= 0 else "▼"
+                  sign  = "+" if diff >= 0 else ""
+                  lines.append(f"| {name} | ${close:,.2f} | {arrow} {sign}${diff:,.2f} | {sign}{pct:.2f}% |")
+              except Exception as e:
+                  lines.append(f"| {name} | エラー | — | — |")
+
+          lines.append("")
+          lines.append("---")
+          lines.append(f"*データ取得: {now.strftime('%Y-%m-%d %H:%M JST')} / ソース: Yahoo Finance*")
+
+          body = "\n".join(lines)
+
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write("ISSUE_TITLE=" + f"📊 米国市場 市況レポート {today}\n")
+
+          with open("/tmp/issue_body.md", "w") as f:
+              f.write(body)
+
+          print("レポート生成完了")
+          print(body)
+          PYEOF
+
+      - name: GitHub Issue として投稿
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('/tmp/issue_body.md', 'utf8');
+            const title = process.env.ISSUE_TITLE;
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: title,
+              body: body,
+              labels: ['market-report'],
+            });
+            console.log('Issue 作成完了');
+        env:
+          ISSUE_TITLE: ${{ env.ISSUE_TITLE }}
