@@ -1,0 +1,65 @@
+name: Daily US Market Update
+
+on:
+  schedule:
+    # 8:00 AM JST = 23:00 UTC (前日)
+    - cron: '0 23 * * *'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  market-update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install "yfinance>=0.2" requests
+
+      - name: Fetch market data
+        run: python scripts/market_summary.py > /tmp/market_body.md
+
+      - name: Show preview
+        run: cat /tmp/market_body.md
+
+      - name: Create issue label if missing
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create "market-update" \
+            --color "0075ca" \
+            --description "米国市場日次サマリー" \
+            --repo "${{ github.repository }}" 2>/dev/null || true
+
+      - name: Close previous market-update issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue list \
+            --label "market-update" \
+            --state open \
+            --json number \
+            --repo "${{ github.repository }}" \
+            --jq '.[].number' \
+          | xargs -I{} gh issue close {} \
+            --repo "${{ github.repository }}" \
+            --comment "新しいサマリーが作成されたため自動クローズ" \
+            2>/dev/null || true
+
+      - name: Create today's issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DATE=$(TZ=Asia/Tokyo date +'%Y-%m-%d')
+          gh issue create \
+            --title "📊 米国市場サマリー ${DATE}" \
+            --body-file /tmp/market_body.md \
+            --label "market-update" \
+            --repo "${{ github.repository }}"
