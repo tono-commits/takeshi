@@ -1,0 +1,158 @@
+name: Daily US Market Report
+
+on:
+  schedule:
+    # 8:00 AM JST = 23:00 UTC previous day (Sun-Thu → Mon-Fri JST)
+    - cron: '0 23 * * 0-4'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  market-report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install yfinance requests
+
+      - name: Fetch market data and create issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 << 'PYEOF'
+          import yfinance as yf
+          import subprocess
+          import json
+          from datetime import datetime, timezone, timedelta
+
+          JST = timezone(timedelta(hours=9))
+          now = datetime.now(JST)
+          today = now.strftime("%Y年%m月%d日")
+          weekday = ["月", "火", "水", "木", "金", "土", "日"][now.weekday()]
+
+          tickers = {
+              "S&P 500":        "^GSPC",
+              "NASDAQ":         "^IXIC",
+              "ダウ平均":       "^DJI",
+              "VIX (恐怖指数)": "^VIX",
+              "米10年債利回り": "^TNX",
+              "金 (Gold)":      "GC=F",
+              "原油 (WTI)":     "CL=F",
+              "USD/JPY":        "JPY=X",
+              "NVIDIA":         "NVDA",
+              "Apple":          "AAPL",
+              "Microsoft":      "MSFT",
+              "Tesla":          "TSLA",
+          }
+
+          def fmt_change(change, pct):
+              arrow = "▲" if change >= 0 else "▼"
+              sign = "+" if change >= 0 else ""
+              return f"{arrow} {sign}{change:,.2f} ({sign}{pct:.2f}%)"
+
+          def fetch(symbol, name):
+              try:
+                  tk = yf.Ticker(symbol)
+                  hist = tk.history(period="2d", interval="1d")
+                  if len(hist) < 2:
+                      hist = tk.history(period="5d", interval="1d")
+                  if len(hist) < 2:
+                      return None
+                  prev_close = hist["Close"].iloc[-2]
+                  last_close = hist["Close"].iloc[-1]
+                  change = last_close - prev_close
+                  pct = change / prev_close * 100
+                  return {
+                      "name": name,
+                      "price": last_close,
+                      "change": change,
+                      "pct": pct,
+                      "date": hist.index[-1].strftime("%Y-%m-%d"),
+                  }
+              except Exception as e:
+                  return {"name": name, "error": str(e)}
+
+          results = {}
+          for name, sym in tickers.items():
+              results[name] = fetch(sym, name)
+
+          def row(r):
+              if r is None or "error" in r:
+                  return "| - | - | - |"
+              price_fmt = f"{r['price']:,.2f}"
+              change_fmt = fmt_change(r['change'], r['pct'])
+              emoji = "🟢" if r['change'] >= 0 else "🔴"
+              return f"| {price_fmt} | {emoji} {change_fmt} | {r.get('date','-')} |"
+
+          indices = ["S&P 500", "NASDAQ", "ダウ平均", "VIX (恐怖指数)", "米10年債利回り"]
+          assets = ["金 (Gold)", "原油 (WTI)", "USD/JPY"]
+          stocks = ["NVIDIA", "Apple", "Microsoft", "Tesla"]
+
+          def section(names):
+              lines = []
+              for n in names:
+                  r = results.get(n)
+                  lines.append(f"| **{n}** {row(r)}")
+              return "\n".join(lines)
+
+          body = f"""# 🇺🇸 米国市場 日次レポート — {today}（{weekday}曜日）
+
+  > 自動生成 | データ出所: Yahoo Finance
+
+  ## 主要指数
+
+  | 指数 | 終値 | 前日比 | 日付 |
+  |------|-----:|--------|------|
+  {section(indices)}
+
+  ## コモディティ・為替
+
+  | 銘柄 | 価格 | 前日比 | 日付 |
+  |------|-----:|--------|------|
+  {section(assets)}
+
+  ## 主要テック株
+
+  | 銘柄 | 終値 | 前日比 | 日付 |
+  |------|-----:|--------|------|
+  {section(stocks)}
+
+  ---
+  *このIssueは毎営業日 08:00 JST に自動作成されます。*
+  """
+
+          title = f"📈 米国市場レポート {today}"
+
+          import os, urllib.request
+
+          base_url = f"https://api.github.com/repos/{os.environ['REPO']}"
+          headers = {
+              "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+              "Accept": "application/vnd.github+json",
+              "Content-Type": "application/json",
+              "X-GitHub-Api-Version": "2022-11-28",
+          }
+
+          # Create label if not exists
+          label_data = json.dumps({"name": "market-report", "color": "0075ca", "description": "Daily US market report"}).encode()
+          try:
+              req = urllib.request.Request(f"{base_url}/labels", data=label_data, headers=headers, method="POST")
+              urllib.request.urlopen(req)
+          except urllib.error.HTTPError as e:
+              if e.code != 422:  # 422 = already exists
+                  print(f"Label warning: {e}")
+
+          # Create issue
+          issue_data = json.dumps({"title": title, "body": body, "labels": ["market-report"]}).encode()
+          req = urllib.request.Request(f"{base_url}/issues", data=issue_data, headers=headers, method="POST")
+          with urllib.request.urlopen(req) as resp:
+              result = json.loads(resp.read())
+              print(f"Issue created: {result['html_url']}")
+          PYEOF
