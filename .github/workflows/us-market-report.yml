@@ -1,0 +1,188 @@
+name: 米国市場 朝8時 市況レポート
+
+on:
+  schedule:
+    # 毎朝8:00 JST = 前日23:00 UTC（日〜木）
+    - cron: '0 23 * * 0-4'
+  workflow_dispatch:
+    inputs:
+      date:
+        description: 'レポート対象日 (YYYY-MM-DD, 空白=最新)'
+        required: false
+
+jobs:
+  market-report:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+
+    steps:
+      - name: Python セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 依存パッケージのインストール
+        run: pip install yfinance requests
+
+      - name: 市況データ取得 & レポート生成
+        id: report
+        run: |
+          python3 << 'PYEOF'
+          import yfinance as yf
+          import json, os, datetime, sys
+
+          JST = datetime.timezone(datetime.timedelta(hours=9))
+          now = datetime.datetime.now(JST)
+
+          # 主要指数
+          INDICES = {
+              "ダウ平均 (DJIA)":   "^DJI",
+              "S&P 500":           "^GSPC",
+              "ナスダック総合":     "^IXIC",
+              "ラッセル2000":      "^RUT",
+              "VIX (恐怖指数)":    "^VIX",
+          }
+
+          # セクターETF
+          SECTORS = {
+              "テクノロジー (XLK)":    "XLK",
+              "金融 (XLF)":           "XLF",
+              "ヘルスケア (XLV)":     "XLV",
+              "エネルギー (XLE)":     "XLE",
+              "一般消費財 (XLY)":     "XLY",
+          }
+
+          # 注目銘柄
+          STOCKS = {
+              "Apple (AAPL)":     "AAPL",
+              "Microsoft (MSFT)": "MSFT",
+              "NVIDIA (NVDA)":    "NVDA",
+              "Amazon (AMZN)":    "AMZN",
+              "Tesla (TSLA)":     "TSLA",
+          }
+
+          # その他
+          OTHERS = {
+              "米国10年債利回り":  "^TNX",
+              "ドル円 (USD/JPY)":  "USDJPY=X",
+              "金 (Gold)":        "GC=F",
+              "原油 (WTI)":       "CL=F",
+          }
+
+          def fetch(symbols_dict):
+              rows = []
+              for name, ticker in symbols_dict.items():
+                  try:
+                      t = yf.Ticker(ticker)
+                      hist = t.history(period="2d")
+                      if len(hist) < 1:
+                          rows.append(f"| {name} | - | - | - |")
+                          continue
+                      latest = hist.iloc[-1]
+                      close = latest['Close']
+                      prev = hist.iloc[-2]['Close'] if len(hist) >= 2 else close
+                      chg = close - prev
+                      pct = chg / prev * 100 if prev else 0
+                      arrow = "🔴" if chg < 0 else "🟢"
+                      sign = "+" if chg >= 0 else ""
+                      rows.append(f"| {name} | {close:,.2f} | {sign}{chg:,.2f} | {arrow} {sign}{pct:.2f}% |")
+                  except Exception as e:
+                      rows.append(f"| {name} | エラー | - | - |")
+              return "\n".join(rows)
+
+          header = "| 銘柄 | 終値 | 前日比 | 騰落 |\n|------|-----:|-------:|------:|"
+
+          report = f"""## 🇺🇸 米国市場 朝の市況レポート
+
+          **{now.strftime('%Y年%m月%d日 (%a)')} JST** — 自動生成
+
+          ### 主要指数
+          {header}
+          {fetch(INDICES)}
+
+          ### セクター ETF
+          {header}
+          {fetch(SECTORS)}
+
+          ### 注目テック銘柄
+          {header}
+          {fetch(STOCKS)}
+
+          ### マクロ / コモディティ
+          {header}
+          {fetch(OTHERS)}
+
+          ---
+          *データソース: Yahoo Finance　　次回更新: 翌営業日 8:00 JST*
+          """
+
+          # 余分なインデントを除去
+          import textwrap
+          report = textwrap.dedent(report).strip()
+
+          with open(os.environ['GITHUB_ENV'], 'a') as f:
+              f.write(f"REPORT_TITLE=🇺🇸 米国市場 市況レポート {now.strftime('%Y-%m-%d')}\n")
+
+          with open('/tmp/report_body.md', 'w') as f:
+              f.write(report)
+
+          print("レポート生成完了")
+          PYEOF
+
+      - name: GitHub Issue に投稿
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('/tmp/report_body.md', 'utf8');
+            const title = process.env.REPORT_TITLE;
+
+            // 既存の同日Issueを検索して更新、なければ新規作成
+            const today = new Date().toISOString().slice(0, 10);
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'market-report',
+              per_page: 10,
+            });
+
+            const existing = issues.find(i => i.title.includes(today));
+
+            if (existing) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: existing.number,
+                body: body,
+              });
+              console.log(`Issue #${existing.number} を更新しました`);
+            } else {
+              // ラベルがなければ作成
+              try {
+                await github.rest.issues.getLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: 'market-report',
+                });
+              } catch {
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: 'market-report',
+                  color: '0075ca',
+                  description: '米国市場 日次レポート',
+                });
+              }
+
+              const issue = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['market-report'],
+              });
+              console.log(`Issue #${issue.data.number} を作成しました: ${issue.data.html_url}`);
+              core.setOutput('issue_url', issue.data.html_url);
+            }
