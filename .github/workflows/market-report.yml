@@ -1,0 +1,161 @@
+name: 毎朝の米国市場レポート
+
+on:
+  schedule:
+    - cron: '0 23 * * *'  # 毎日 23:00 UTC = 翌朝 8:00 JST
+  workflow_dispatch:       # 手動実行も可能
+
+permissions:
+  issues: write
+
+jobs:
+  market-report:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Python セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 依存関係インストール
+        run: pip install yfinance
+
+      - name: 市場データ取得・レポート生成
+        run: |
+          python << 'PYEOF'
+          import yfinance as yf
+          import os
+          from datetime import datetime, timezone, timedelta
+
+          JST = timezone(timedelta(hours=9))
+          now = datetime.now(JST)
+
+          INDICES = {
+              "S&P 500":       "^GSPC",
+              "ダウ平均":      "^DJI",
+              "NASDAQ":        "^IXIC",
+              "ラッセル2000":  "^RUT",
+              "VIX (恐怖指数)":"^VIX",
+          }
+
+          SECTORS = {
+              "テクノロジー (XLK)":  "XLK",
+              "金融 (XLF)":          "XLF",
+              "ヘルスケア (XLV)":    "XLV",
+              "エネルギー (XLE)":    "XLE",
+              "一般消費財 (XLY)":    "XLY",
+              "公益事業 (XLU)":      "XLU",
+          }
+
+          OTHERS = {
+              "米10年債利回り":   "^TNX",
+              "ドル指数 (DXY)":  "DX-Y.NYB",
+              "金 (GC=F)":       "GC=F",
+              "原油 WTI (CL=F)": "CL=F",
+          }
+
+          def fetch(ticker):
+              try:
+                  t = yf.Ticker(ticker)
+                  info = t.fast_info
+                  close = info.last_price
+                  prev  = info.previous_close
+                  if close is None or prev is None:
+                      return None
+                  chg = close - prev
+                  pct = chg / prev * 100
+                  return {"close": close, "change": chg, "pct": pct}
+              except Exception:
+                  return None
+
+          def sign(v):
+              return "+" if v >= 0 else ""
+
+          def mood(pct):
+              if pct >= 1.5:  return "🚀"
+              if pct >= 0.3:  return "📈"
+              if pct >= -0.3: return "➡️"
+              if pct >= -1.5: return "📉"
+              return "🔻"
+
+          def fmt(v, dec=2):
+              return f"{v:,.{dec}f}"
+
+          lines = []
+          lines.append(f"# 🗽 米国市場レポート — {now.strftime('%Y年%m月%d日')} 朝8時")
+          lines.append(f"*データ取得: {now.strftime('%Y-%m-%d %H:%M')} JST*")
+          lines.append("")
+
+          lines.append("## 📊 主要指数")
+          lines.append("")
+          lines.append("| 指数 | 終値 | 前日比 | 騰落率 |")
+          lines.append("|:-----|-----:|-------:|-------:|")
+          for name, sym in INDICES.items():
+              d = fetch(sym)
+              if d:
+                  em = mood(d["pct"])
+                  lines.append(
+                      f"| {em} {name} | {fmt(d['close'])} "
+                      f"| {sign(d['change'])}{fmt(d['change'])} "
+                      f"| {sign(d['pct'])}{fmt(d['pct'])}% |"
+                  )
+
+          lines.append("")
+          lines.append("## 🏭 セクター別ETF")
+          lines.append("")
+          lines.append("| セクター | 終値 | 騰落率 |")
+          lines.append("|:--------|-----:|-------:|")
+          for name, sym in SECTORS.items():
+              d = fetch(sym)
+              if d:
+                  em = mood(d["pct"])
+                  lines.append(
+                      f"| {em} {name} | {fmt(d['close'])} "
+                      f"| {sign(d['pct'])}{fmt(d['pct'])}% |"
+                  )
+
+          lines.append("")
+          lines.append("## 💹 その他の市場")
+          lines.append("")
+          lines.append("| 指標 | 価格 | 騰落率 |")
+          lines.append("|:-----|-----:|-------:|")
+          for name, sym in OTHERS.items():
+              d = fetch(sym)
+              if d:
+                  em = mood(d["pct"])
+                  lines.append(
+                      f"| {em} {name} | {fmt(d['close'])} "
+                      f"| {sign(d['pct'])}{fmt(d['pct'])}% |"
+                  )
+
+          lines.append("")
+          lines.append("---")
+          lines.append("*このレポートは GitHub Actions により自動生成されています。*")
+
+          report = "\n".join(lines)
+          title  = f"📈 米国市場レポート {now.strftime('%Y-%m-%d')}"
+
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write(f"REPORT_TITLE={title}\n")
+
+          with open("/tmp/report.md", "w") as f:
+              f.write(report)
+
+          print(report)
+          PYEOF
+
+      - name: GitHub Issue として投稿
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "$REPORT_TITLE" \
+            --body-file /tmp/report.md \
+            --label "market-report" \
+          || \
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "$REPORT_TITLE" \
+            --body-file /tmp/report.md
