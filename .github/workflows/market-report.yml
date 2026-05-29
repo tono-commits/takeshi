@@ -1,0 +1,145 @@
+name: 米国市場朝8時レポート
+
+on:
+  schedule:
+    - cron: '0 23 * * *'  # 毎日23:00 UTC = 翌朝8:00 JST
+  workflow_dispatch:       # 手動実行も可能
+
+jobs:
+  market-report:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+
+    steps:
+      - name: ラベル作成（初回のみ）
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'market-report',
+                color: '0075ca',
+                description: '米国市場日次レポート',
+              });
+            } catch(e) {
+              // すでに存在する場合は無視
+            }
+
+      - name: 米国市場データ取得・Issue作成
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const symbols = [
+              { symbol: '^GSPC',   name: 'S&P 500',       type: 'index' },
+              { symbol: '^DJI',    name: 'ダウ平均',       type: 'index' },
+              { symbol: '^IXIC',   name: 'NASDAQ',         type: 'index' },
+              { symbol: '^RUT',    name: 'Russell 2000',   type: 'index' },
+              { symbol: '^VIX',    name: 'VIX（恐怖指数）', type: 'vix'  },
+              { symbol: '^TNX',    name: '米10年債利回り', type: 'yield' },
+              { symbol: 'USDJPY=X', name: 'USD/JPY',      type: 'fx'   },
+              { symbol: 'GC=F',    name: '金（Gold）',    type: 'commodity' },
+              { symbol: 'CL=F',    name: 'WTI原油',       type: 'commodity' },
+            ];
+
+            async function fetchQuote(symbol) {
+              const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=5d`;
+              try {
+                const resp = await fetch(url, {
+                  headers: { 'User-Agent': 'Mozilla/5.0 (compatible; market-bot/1.0)' }
+                });
+                if (!resp.ok) return null;
+                const data = await resp.json();
+                const meta = data.chart.result[0].meta;
+                const price = meta.regularMarketPrice ?? meta.previousClose;
+                const prev  = meta.chartPreviousClose ?? meta.previousClose;
+                if (!price || !prev) return null;
+                return {
+                  price,
+                  prev,
+                  change: price - prev,
+                  changePct: ((price - prev) / prev) * 100,
+                  marketState: meta.marketState,
+                };
+              } catch(e) {
+                return null;
+              }
+            }
+
+            function formatPrice(q, type) {
+              if (type === 'yield') return q.price.toFixed(3) + '%';
+              if (type === 'fx')    return q.price.toFixed(2) + '円';
+              if (type === 'vix')  return q.price.toFixed(2);
+              return q.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            }
+
+            function arrow(change) {
+              return change >= 0 ? '▲' : '▼';
+            }
+
+            // JST時刻
+            const now = new Date();
+            const jst = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+            const dateJP = jst.toLocaleDateString('ja-JP', {
+              year: 'numeric', month: 'long', day: 'numeric', weekday: 'long'
+            });
+            const timeJP = jst.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
+
+            // データ取得（並列）
+            const results = await Promise.all(symbols.map(s => fetchQuote(s.symbol)));
+
+            // --- Issue本文 ---
+            let body = `# 🇺🇸 米国市場レポート\n`;
+            body += `**${dateJP}** ${timeJP} JST 時点\n\n`;
+
+            // 主要指数テーブル
+            body += `## 📊 主要指数・資産\n\n`;
+            body += `| | 銘柄 | 現値 | 前日比 | 変化率 |\n`;
+            body += `|:--:|:-----|-----:|-------:|-------:|\n`;
+
+            for (let i = 0; i < symbols.length; i++) {
+              const { name, type } = symbols[i];
+              const q = results[i];
+              if (!q) {
+                body += `| ⚪ | ${name} | - | - | - |\n`;
+                continue;
+              }
+              const up = q.change >= 0;
+              const emoji = type === 'vix' ? (up ? '🔴' : '🟢') : (up ? '🟢' : '🔴');
+              const sign = up ? '+' : '';
+              const priceStr = formatPrice(q, type);
+              const changeStr = `${sign}${q.change.toFixed(type === 'yield' ? 3 : 2)}`;
+              const pctStr = `${sign}${q.changePct.toFixed(2)}%`;
+              const arw = arrow(q.change);
+              body += `| ${emoji} | **${name}** | ${priceStr} | ${arw} ${changeStr} | ${arw} ${pctStr} |\n`;
+            }
+
+            // マーケット状況サマリー
+            const spq = results[0];
+            if (spq) {
+              const spDir = spq.change >= 0 ? '上昇📈' : '下落📉';
+              const vixq = results[4];
+              let vixComment = '';
+              if (vixq) {
+                if (vixq.price > 30) vixComment = '⚠️ VIXが30超 — 市場は高不安状態';
+                else if (vixq.price > 20) vixComment = 'VIXが20超 — やや不安定';
+                else vixComment = 'VIXは落ち着いた水準';
+              }
+              body += `\n## 💬 概況\n\n`;
+              body += `S&P 500は前日比 **${spq.changePct >= 0 ? '+' : ''}${spq.changePct.toFixed(2)}%** で${spDir}。`;
+              if (vixComment) body += `${vixComment}。`;
+              body += '\n';
+            }
+
+            body += `\n---\n> *データ出典: Yahoo Finance | 自動生成 by GitHub Actions*`;
+
+            const titleDate = jst.toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' }).replace(/\//g, '-');
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `📈 米国市場レポート ${titleDate}`,
+              body,
+              labels: ['market-report'],
+            });
